@@ -5,30 +5,92 @@ from game.ui import Button, draw_bar
 class BattleMixin:
     def start_battle(self, stage_idx):
         self.state = "battle"; self.stage_idx = stage_idx
-        self.stage_page = stage_idx // 4
-        self.current_stage = get_stage(stage_idx)
+        self.stage_page = max(0, stage_idx // 4)
+        if stage_idx >= 0:
+            self.current_stage = get_stage(stage_idx)
+            self.is_dungeon_battle = False  # Reset dungeon flag for normal battles
+        
+        # Initialize basic attributes immediately to prevent AttributeErrors elsewhere
+        self.b_enemies = []; self.b_party = []; self.b_log = []; self.b_particles = []
+        self.b_texts = [] # Floating damage texts
+        self.b_state = "normal"; self.b_shake = 0; self.b_flash = None; self.round_damage = 0
+        self.b_enemy_idx = 0; self.b_turn = "none" # Will be set in next_turn
+        
+        # Enemies
         self.b_enemies = [dict(e, max_hp=e["hp"]) for e in copy.deepcopy(self.current_stage["enemies"])]
         for i, e in enumerate(self.b_enemies):
-            e["spd"] = int(10 * (1.01 ** stage_idx))
+            if stage_idx >= 0:
+                e["spd"] = int(10 * (1.01 ** stage_idx))
+            else:
+                e["spd"] = int(10 * (1.05 ** getattr(self, 'current_dungeon_floor', 0)))
             e["is_player"] = False; e["b_idx"] = i
             
-        self.b_party = []
+        # Party
+        # Global Rune Effects
+        equipped_runes = getattr(self, "equipped_runes", [None, None, None])
+        rune_mults = {"atk": 1.0, "hp": 1.0, "def": 1.0, "spd": 1.0, "crit_chance": 0, "crit_dmg": 0}
+        for r in equipped_runes:
+            if r:
+                stat = r["stat"]
+                if stat in ["crit_chance", "crit_dmg"]:
+                    rune_mults[stat] += r["val"]
+                else:
+                    rune_mults[stat] += (r["val"] / 100.0)
+
         for i, ch in enumerate(self.party):
-            # Create a clean copy for battle
             d = copy.deepcopy(ch)
-            d["max_hp"] = d.get("hp", 100)
-            d["cur_hp"] = d["max_hp"]
-            d["is_player"] = True
-            d["b_idx"] = i
-            d["spd"] = d.get("spd", 10)
+            
+            # Apply Rune Multipliers
+            for stat in ["atk", "hp", "def", "spd"]:
+                if stat in d:
+                    d[stat] = max(1, int(d[stat] * rune_mults[stat]))
+            
+            # Apply Gear Stats
+            from game.constants import get_gear_stats, GEAR_SLOTS
+            if "gear" not in d: d["gear"] = {s: None for s in GEAR_SLOTS}
+            gear_crit_chance = 0; gear_crit_dmg = 0
+            for slot_name, gear_piece in d.get("gear", {}).items():
+                if gear_piece:
+                    gs = get_gear_stats(gear_piece)
+                    if "hp_pct" in gs: d["hp"] = max(1, int(d["hp"] * (1 + gs["hp_pct"]/100)))
+                    if "atk_pct" in gs: d["atk"] = max(1, int(d["atk"] * (1 + gs["atk_pct"]/100)))
+                    if "def_pct" in gs: d["def"] = max(1, int(d["def"] * (1 + gs["def_pct"]/100)))
+                    if "spd_pct" in gs: d["spd"] = max(1, int(d["spd"] * (1 + gs["spd_pct"]/100)))
+                    gear_crit_chance += gs.get("crit_chance", 0)
+                    gear_crit_dmg += gs.get("crit_dmg", 0)
+            
+            # Calculate Crit from all sources
+            base_crit = 5.0
+            star_crit = max(0, (d.get("stars", 1) - 5) * 0.5)
+            asc_crit = d.get("ascension", 0) * 1.0
+            rune_crit = rune_mults.get("crit_chance", 0)
+            total_crit = min(75.0, base_crit + gear_crit_chance + star_crit + asc_crit + rune_crit)
+            
+            base_crit_dmg = 150.0
+            star_crit_dmg = max(0, (d.get("stars", 1) - 7) * 2.0)
+            rune_crit_dmg_val = rune_mults.get("crit_dmg", 0)
+            total_crit_dmg = base_crit_dmg + gear_crit_dmg + star_crit_dmg + rune_crit_dmg_val
+            
+            d["crit_chance"] = total_crit
+            d["crit_dmg"] = total_crit_dmg
+            
+            # Apply active buffs (list of item keys)
+            cid = id(ch)
+            if cid in getattr(self, "active_buffs", {}):
+                for item_key in self.active_buffs[cid]:
+                    it = ITEMS.get(item_key)
+                    if it and it["type"] == "buff":
+                        stat = it.get("stat")
+                        boost = it.get("value", 0)
+                        if stat in d:
+                            d[stat] = int(d[stat] * (1 + boost))
+                del self.active_buffs[cid] # Consume buffs
+            
+            d["max_hp"] = d.get("hp", 100); d["cur_hp"] = d["max_hp"]
+            d["is_player"] = True; d["b_idx"] = i; d["spd"] = d.get("spd", 10)
             self.b_party.append(d)
             
-        self.b_log=[f"Battle Start! {len(self.b_party)} heroes ready."]; self.b_enemy_idx=0
-        self.round_damage = 0
-        self.b_particles = []
-        self.b_state = "normal"
-        self.b_shake = 0
-        self.b_flash = None
+        self.b_log=[f"Battle Start! {len(self.b_party)} heroes ready."]
         self.build_turn_queue()
         self.next_turn()
 
@@ -45,13 +107,15 @@ class BattleMixin:
         if all(e["hp"]<=0 for e in self.b_enemies):
             if self.state != "battle": return
             self.state = "victory_processing"
+            
+            if getattr(self, "is_dungeon_battle", False):
+                self._dungeon_victory(); return
 
             from game.constants import get_stage_gold_reward
             reward = get_stage_gold_reward(self.stage_idx); self.gold += reward
             loot=roll_loot(self.stage_idx)
             for k in loot:
                 if ITEMS[k]["type"]=="gold":
-                    # Gold Bag scales with stage: +20% every 5 stages
                     bag_mult = 1 + (self.stage_idx // 5) * 0.2
                     self.gold += int(ITEMS[k]["value"] * bag_mult)
                 else: self.backpack[k]=self.backpack.get(k,0)+1
@@ -88,7 +152,7 @@ class BattleMixin:
     def draw_battle(self):
         self.clear(); c=self.canvas
         
-        # Biome Background
+        # Biome Background Dynamic Gradient/Pattern
         stg_name = self.current_stage.get("name", "")
         bg_col = "#000b1a" # Default deep space
         if "Volcano" in stg_name or "Inferno" in stg_name: bg_col = "#1a0500"
@@ -100,8 +164,10 @@ class BattleMixin:
         # Screen Shake Offset
         off_x, off_y = 0, 0
         if getattr(self, "b_shake", 0) > 0:
-            off_x = random.randint(-self.b_shake, self.b_shake)
-            off_y = random.randint(-self.b_shake, self.b_shake)
+            shake_val = int(self.b_shake)
+            if shake_val > 0:
+                off_x = random.randint(-shake_val, shake_val)
+                off_y = random.randint(-shake_val, shake_val)
             
         c.create_rectangle(0,0,WIDTH,HEIGHT,fill=bg_col,outline="")
         
@@ -157,8 +223,10 @@ class BattleMixin:
             c.create_text(x+pw//2,y+18,text=ch["icon"],font=("Segoe UI Emoji",14))
             c.create_text(x+pw//2,y+40,text=f"{ch['name']} Lv.{ch.get('level',1)}",fill=WHITE if alive else "#555",font=("Segoe UI",10,"bold"))
             draw_bar(c,x+10,y+58,pw-20,14,ch["cur_hp"]/ch["max_hp"],GREEN)
-            c.create_text(x+pw//2,y+85,text=f"HP:{ch['cur_hp']}/{ch['max_hp']}",fill="#aaa",font=("Segoe UI",9))
+            hp_txt = f"{int(ch['cur_hp'])}/{int(ch['max_hp'])}"
+            c.create_text(x+pw//2,y+85,text=f"HP: {hp_txt}",fill=WHITE if alive else "#555",font=("Segoe UI",9,"bold"))
             c.create_text(x+10,y+100,text=f"ATK:{ch['atk']} DEF:{ch['def']}",fill="#888",font=("Segoe UI",7),anchor="w")
+            c.create_text(x+10,y+115,text=f"CR:{int(ch.get('crit_chance', 5))}% CD:{int(ch.get('crit_dmg', 150))}%",fill=ORANGE,font=("Segoe UI",7),anchor="w")
             if alive and getattr(self, "b_state", "normal") == "selecting_heal_target":
                 self.add_btn(x+5, y+108, pw-10, 18, "💚 HEAL", GREEN, font_size=8, command=lambda idx=i: self.execute_heal(idx))
         if getattr(self, "b_turn", None) == "player":
@@ -170,9 +238,19 @@ class BattleMixin:
                     skill_btn = self.add_btn(300,470,180,45,f"✨ {act.get('skill','Skill')}",PURPLE,font_size=11,command=self.do_skill)
                     if getattr(skill_btn, "is_hover", False):
                         sd = act.get("skill_dmg", 1.5)
-                        info = f"Heals ally for {int(act['atk']*2)} HP" if sd == 0 else f"Deals {int(act['atk']*sd)} base dmg"
-                        c.create_rectangle(300, 425, 480, 455, fill="#2a2a4e", outline=PURPLE, width=1)
-                        c.create_text(390, 440, text=info, fill=WHITE, font=("Segoe UI", 9))
+                        tt = act.get("target_type", "single").upper()
+                        atk = act["atk"]
+                        if sd == 0:
+                            heal_val = int(atk * 2)
+                            info = f"[{tt}] Heals Party for {heal_val} HP each" if tt == "AOE" else f"[{tt}] Heals Ally for {heal_val} HP"
+                        else:
+                            dmg_val = int(atk * sd)
+                            if tt == "AOE":
+                                info = f"[{tt}] Deals {dmg_val} dmg to EACH enemy"
+                            else:
+                                info = f"[{tt}] Deals {dmg_val} dmg to target"
+                        c.create_rectangle(260, 420, 520, 455, fill="#2a2a4e", outline=PURPLE, width=1)
+                        c.create_text(390, 437, text=info, fill=WHITE, font=("Segoe UI", 9, "bold"))
                     if getattr(atk_btn, "is_hover", False):
                         info = f"Deals ~{act['atk']-3} to {act['atk']+5} base dmg"
                         c.create_rectangle(120, 425, 270, 455, fill="#2a2a4e", outline=ACCENT, width=1)
@@ -194,25 +272,45 @@ class BattleMixin:
             i = actor["b_idx"]; x = ex+i*(ew+10); y = 125 + float_off
             return (x + ew//2, y + 60)
 
+    def _add_floating_text(self, x, y, text, color):
+        if not hasattr(self, "b_texts"): self.b_texts = []
+        self.b_texts.append({
+            "x": x + random.randint(-20, 20), "y": y - 20,
+            "text": text, "color": color, "life": 1.5, "vy": -2
+        })
+
     def _spawn_particles(self, x, y, color, icon):
-        for _ in range(15):
+        for _ in range(20):
             self.b_particles.append({
                 "x": x, "y": y,
-                "vx": random.uniform(-8, 8),
-                "vy": random.uniform(-10, 5),
-                "life": 1.0, "color": color, "icon": icon or "✨"
+                "vx": random.uniform(-10, 10),
+                "vy": random.uniform(-12, 4),
+                "life": 1.0, "color": color, 
+                "icon": icon or random.choice(["✦", "✨", "💥", "▪"])
             })
 
     def _update_particles(self):
+        fps_scale = 30 / getattr(self, "target_fps", 30)
         for p in self.b_particles[:]:
-            p["x"] += p["vx"]; p["y"] += p["vy"]
-            p["vy"] += 0.6; p["life"] -= 0.08
+            p["x"] += p["vx"] * fps_scale; p["y"] += p["vy"] * fps_scale
+            p["vy"] += 0.8 * fps_scale; p["life"] -= 0.05 * fps_scale
             if p["life"] <= 0: self.b_particles.remove(p)
+            
+        for t in getattr(self, "b_texts", [])[:]:
+            t["y"] += t["vy"] * fps_scale
+            t["life"] -= 0.03 * fps_scale
+            if t["life"] <= 0: self.b_texts.remove(t)
 
     def _draw_particles(self):
+        c = self.canvas
         for p in getattr(self, "b_particles", []):
-            sz = int(8 + p["life"] * 12)
-            self.canvas.create_text(p["x"], p["y"], text=p["icon"], fill=p["color"], font=("Segoe UI Emoji", sz))
+            sz = max(1, int(10 + p["life"] * 15))
+            c.create_text(p["x"], p["y"], text=p["icon"], fill=p["color"], font=("Segoe UI Emoji", sz))
+            
+        for t in getattr(self, "b_texts", []):
+            alpha_col = t["color"] # Simple fallback if tkinter doesn't support alpha well
+            c.create_text(t["x"]+2, t["y"]+2, text=t["text"], fill="#000000", font=("Segoe UI", 24, "bold"))
+            c.create_text(t["x"], t["y"], text=t["text"], fill=t["color"], font=("Segoe UI", 24, "bold"))
 
     def set_target(self,idx): self.b_enemy_idx=idx; self.draw_battle()
 
@@ -223,17 +321,35 @@ class BattleMixin:
                 if e["hp"]>0: self.b_enemy_idx=i; return e
         return t
 
+    def _roll_crit(self, attacker):
+        cc = attacker.get("crit_chance", 5.0)
+        cd = attacker.get("crit_dmg", 150.0)
+        if random.random() * 100 < cc:
+            return cd / 100.0  # e.g. 1.5x
+        return 1.0
+
     def do_attack(self):
         if self.b_turn != "player": return
         self.b_turn = "busy"
         a=self.b_party[self.b_selected_char]
         if a["cur_hp"]<=0: return
         t=self._find_target(); dmg=max(1,a["atk"]-t["def"]//2+random.randint(-3,5))
-        t["hp"]=max(0,t["hp"]-dmg); self.b_log.append(f"{a['name']} hits {t['name']} for {dmg}!"); 
+        crit_mult = self._roll_crit(a)
+        is_crit = crit_mult > 1.0
+        dmg = int(dmg * crit_mult)
+        t["hp"]=max(0,t["hp"]-dmg)
+        crit_txt = " 💥CRIT!" if is_crit else ""
+        self.b_log.append(f"{a['name']} hits {t['name']} for {dmg}!{crit_txt}"); 
         self.round_damage += dmg
         tx, ty = self._get_actor_coords(t)
         self._spawn_particles(tx, ty, a["color"], a["icon"])
-        self.b_shake = 10
+        if is_crit:
+            self._add_floating_text(tx, ty, f"💥 {dmg}", GOLD)
+            self._spawn_particles(tx, ty, GOLD, "💥")
+            self.b_shake = 15
+        else:
+            self._add_floating_text(tx, ty, f"-{dmg}", RED)
+            self.b_shake = 5
         self.b_flash = "#330000" if t.get("is_player") else "#ffffff"
         self.draw_battle()
         self.after_action()
@@ -243,33 +359,71 @@ class BattleMixin:
         a=self.b_party[self.b_selected_char]
         if a["cur_hp"]<=0: return
         sd=a.get("skill_dmg",1.5); sn=a.get("skill","Skill")
+        is_aoe = a.get("target_type") == "aoe"
         
         # Double click detection for heal
         now = time.time()
         is_double = (now - getattr(self, "_last_skill_time", 0) < 0.3)
         self._last_skill_time = now
         
-        if sd==0:
-            if is_double:
-                # Auto-heal lowest HP ally
-                alive_allies = [c for c in self.b_party if c["cur_hp"] > 0]
-                if alive_allies:
-                    ht = min(alive_allies, key=lambda c: c["cur_hp"]/c["max_hp"])
-                    self.execute_heal(self.b_party.index(ht))
-                return
-            self.b_state = "selecting_heal_target"
-            self.draw_battle()
-        else:
+        if sd==0: # HEAL SKILL
+            if is_aoe:
+                self.b_turn = "busy"
+                heal = int(a["atk"] * 1.2) # AoE heal is weaker per person
+                for ht in self.b_party:
+                    if ht["cur_hp"] > 0:
+                        ht["cur_hp"] = min(ht["max_hp"], ht["cur_hp"]+heal)
+                        tx, ty = self._get_actor_coords(ht)
+                        self._spawn_particles(tx, ty, GREEN, "✨")
+                        self._add_floating_text(tx, ty, f"+{heal}", GREEN)
+                self.b_log.append(f"🌟 {a['name']} uses {sn}: All allies healed +{heal}!")
+                self.b_state = "normal"; self.draw_battle(); self.after_action()
+            else:
+                if is_double:
+                    # Auto-heal lowest HP ally
+                    alive_allies = [c for c in self.b_party if c["cur_hp"] > 0]
+                    if alive_allies:
+                        ht = min(alive_allies, key=lambda c: c["cur_hp"]/c["max_hp"])
+                        self.execute_heal(self.b_party.index(ht))
+                    return
+                self.b_state = "selecting_heal_target"; self.draw_battle()
+        else: # DAMAGE SKILL
             self.b_turn = "busy"
-            t=self._find_target(); dmg=max(1,int(a["atk"]*sd)-t["def"]//3+random.randint(-2,8))
-            t["hp"]=max(0,t["hp"]-dmg); self.b_log.append(f"{a['name']} uses {sn} on {t['name']} for {dmg}!")
-            self.round_damage += dmg
-            tx, ty = self._get_actor_coords(t)
-            self._spawn_particles(tx, ty, PURPLE, a["icon"])
-            self.b_shake = 15
-            self.b_flash = PURPLE
-            self.draw_battle()
-            self.after_action()
+            if is_aoe:
+                targets = [e for e in self.b_enemies if e["hp"] > 0]
+                total_dmg = 0
+                for t in targets:
+                    dmg = max(1, int(a["atk"] * sd * 0.7) - t["def"]//4 + random.randint(-2, 5))
+                    crit_mult = self._roll_crit(a)
+                    is_crit = crit_mult > 1.0
+                    dmg = int(dmg * crit_mult)
+                    t["hp"] = max(0, t["hp"] - dmg); total_dmg += dmg
+                    tx, ty = self._get_actor_coords(t)
+                    self._spawn_particles(tx, ty, PURPLE, a["icon"])
+                    if is_crit:
+                        self._add_floating_text(tx, ty, f"💥 {dmg}", GOLD)
+                    else:
+                        self._add_floating_text(tx, ty, f"-{dmg}", RED)
+                self.b_log.append(f"💥 {a['name']} uses {sn}: Deals {total_dmg} total AoE dmg!")
+                self.round_damage += total_dmg
+                self.b_shake = 15; self.b_flash = PURPLE
+            else:
+                t=self._find_target(); dmg=max(1,int(a["atk"]*sd)-t["def"]//3+random.randint(-2,8))
+                crit_mult = self._roll_crit(a)
+                is_crit = crit_mult > 1.0
+                dmg = int(dmg * crit_mult)
+                t["hp"]=max(0,t["hp"]-dmg)
+                crit_txt = " 💥CRIT!" if is_crit else ""
+                self.b_log.append(f"✨ {a['name']} uses {sn} on {t['name']} for {dmg}!{crit_txt}")
+                self.round_damage += dmg
+                tx, ty = self._get_actor_coords(t)
+                self._spawn_particles(tx, ty, PURPLE, a["icon"])
+                if is_crit:
+                    self._add_floating_text(tx, ty, f"💥 {dmg}", GOLD)
+                else:
+                    self._add_floating_text(tx, ty, f"-{dmg}", RED)
+                self.b_shake = 15; self.b_flash = PURPLE
+            self.draw_battle(); self.after_action()
 
     def execute_heal(self, target_idx):
         if self.b_turn != "player": return
@@ -280,6 +434,7 @@ class BattleMixin:
         self.b_log.append(f"{a['name']} heals {ht['name']} +{heal}!")
         tx, ty = self._get_actor_coords(ht)
         self._spawn_particles(tx, ty, GREEN, "✨")
+        self._add_floating_text(tx, ty, f"+{heal}", GREEN)
         self.b_state = "normal"
         self.draw_battle()
         self.after_action()
@@ -296,13 +451,15 @@ class BattleMixin:
         alive = [c for c in self.b_party if c["cur_hp"] > 0]
         if alive:
             t=random.choice(alive)
-            dmg=max(1,en["atk"]-t["def"]//2+random.randint(-3,5))
-            self.b_log.append(f"{en['name']} hits {t['name']} for {dmg}!")
+            # Standard formula: ATK - DEF/2
+            dmg=max(1, en["atk"] - t["def"]//2 + random.randint(-2, 5))
+            self.b_log.append(f"💥 {en['name']} attacks {t['name']} for {dmg} damage!")
             self.b_shake = 12; self.b_flash = "#ff0000"
                 
             t["cur_hp"]=max(0,t["cur_hp"]-dmg)
             tx, ty = self._get_actor_coords(t)
             self._spawn_particles(tx, ty, RED, en["icon"])
+            self._add_floating_text(tx, ty, f"-{dmg}", RED)
             
         self.draw_battle()
         self.after_action()
@@ -326,5 +483,59 @@ class BattleMixin:
         self.clear(); c=self.canvas
         c.create_text(WIDTH//2,150,text="💀",font=("Segoe UI Emoji",50))
         c.create_text(WIDTH//2,250,text="DEFEATED",fill=RED,font=("Segoe UI",36,"bold"))
-        self.add_btn(WIDTH//2-110,350,100,50,"Return",GRAY,command=self.goto_hub)
-        self.add_btn(WIDTH//2+10,350,100,50,"Retry",BLUE,command=lambda:self.start_battle(self.stage_idx))
+        if getattr(self, "is_dungeon_battle", False):
+            self.add_btn(WIDTH//2-110,350,100,50,"Return",GRAY,command=self.goto_dungeon_after)
+            self.add_btn(WIDTH//2+10,350,100,50,"Retry",BLUE,command=lambda:self.start_dungeon_battle(self.current_dungeon_floor))
+        else:
+            self.add_btn(WIDTH//2-110,350,100,50,"Return",GRAY,command=self.goto_hub)
+            self.add_btn(WIDTH//2+10,350,100,50,"Retry",BLUE,command=lambda:self.start_battle(self.stage_idx))
+
+    def goto_dungeon_after(self):
+        self.is_dungeon_battle = False
+        self.goto_dungeon() if hasattr(self, 'goto_dungeon') else self.goto_hub()
+
+    def _dungeon_victory(self):
+        from game.constants import generate_dungeon_gear
+        floor = getattr(self, "current_dungeon_floor", 0)
+        
+        # Gear drop
+        gear = generate_dungeon_gear(floor)
+        self.gear_inventory.append(gear)
+        
+        # Forge stones
+        stones = random.randint(1, max(1, min(3, 1 + floor // 5)))
+        self.backpack["forge_stone"] = self.backpack.get("forge_stone", 0) + stones
+        
+        # Gold
+        gold_reward = int(500 + floor * 200)
+        self.gold += gold_reward
+        
+        # Progression
+        if floor >= getattr(self, "max_dungeon_cleared", 0):
+            self.max_dungeon_cleared = floor + 1
+        
+        self.do_save()
+        self.state = "dungeon_victory"
+        self._draw_dungeon_victory(gear, stones, gold_reward, floor)
+
+    def _draw_dungeon_victory(self, gear, stones, gold, floor):
+        self.clear(); c = self.canvas
+        c.create_rectangle(0,0,WIDTH,HEIGHT,fill="#0a0008",outline="")
+        c.create_text(WIDTH//2,60,text="⚔️",font=("Segoe UI Emoji",45))
+        c.create_text(WIDTH//2,120,text=f"DUNGEON FLOOR {floor+1} CLEARED!",fill=GOLD,font=("Segoe UI",28,"bold"))
+        c.create_text(WIDTH//2,170,text=f"+{gold} Gold  |  +{stones} Forge Stones",fill=GREEN,font=("Segoe UI",14))
+        
+        # Show gear drop
+        c.create_rectangle(WIDTH//2-120, 210, WIDTH//2+120, 370, fill="#161b22", outline=gear["color"], width=3)
+        c.create_text(WIDTH//2, 240, text="NEW GEAR!", fill=GOLD, font=("Segoe UI", 16, "bold"))
+        c.create_text(WIDTH//2, 275, text=gear["icon"], font=("Segoe UI Emoji", 40))
+        c.create_text(WIDTH//2, 315, text=gear["name"], fill=gear["color"], font=("Segoe UI", 14, "bold"))
+        c.create_text(WIDTH//2, 340, text=f"Tier: {gear['tier']}  |  Slot: {gear['slot'].title()}", fill="#aaa", font=("Segoe UI", 10))
+        from game.constants import get_gear_stats
+        stats = get_gear_stats(gear)
+        stat_str = "  ".join(f"+{v}% {k.replace('_pct','').replace('_',' ').upper()}" for k,v in stats.items())
+        c.create_text(WIDTH//2, 360, text=stat_str, fill=GREEN, font=("Segoe UI", 11))
+        
+        self.add_btn(WIDTH//2-210,420,120,50,"← Dungeon",GRAY,command=self.goto_dungeon_after)
+        self.add_btn(WIDTH//2-70,420,140,50,"🔁 Retry",BLUE,command=lambda:self.start_dungeon_battle(floor))
+        self.add_btn(WIDTH//2+90,420,120,50,"Next ⚔️","#8b0000",command=lambda:self.start_dungeon_battle(floor+1))

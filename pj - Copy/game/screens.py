@@ -1,4 +1,4 @@
-import random, copy, math
+import random, copy, math, tkinter as tk
 from game.constants import *
 from game.ui import Button, draw_bar, draw_card
 from game.battle import BattleMixin
@@ -38,7 +38,8 @@ class GameApp(BattleMixin):
         self.gold = 500; self.backpack = {"exp_potion_1": 3}; self.shards = {}
         self.active_buffs = {}; self.state = "menu"; self.anim_frame = 0
         self.stage_page = 0; self.bp_selected_char = None; self.max_stage_cleared = 0
-        self.gacha_results = []; self.gacha_mode = "normal"; self.runes_equipped = [None, None, None]
+        self.gacha_results = []; self.gacha_mode = "normal"
+        self.notif_msg = ""; self.notif_timer = 0
         self._try_load()
         self.canvas.bind("<Button-1>", self.on_click); self.canvas.bind("<Motion>", self.on_motion)
         self.root.bind("<F11>", lambda e: self.toggle_fullscreen())
@@ -51,17 +52,14 @@ class GameApp(BattleMixin):
             self.gold = data.get("gold", 500)
             self.backpack = data.get("backpack", {"exp_potion_1": 3})
             self.max_stage_cleared = data.get("max_stage_cleared", 0)
-            self.runes_equipped = data.get("runes_equipped", [None, None, None])
             self.owned_chars = data.get("owned_chars", [])
             self.shards = data.get("shards", {})
             party_indices = data.get("party_indices", [])
             self.party = [self.owned_chars[i] for i in party_indices if i < len(self.owned_chars)]
-            self.refresh_all_stats()
 
     def do_save(self):
         party_idx = [self.owned_chars.index(c) for c in self.party if c in self.owned_chars]
         save_game({"gold": self.gold, "backpack": self.backpack, "max_stage_cleared": self.max_stage_cleared,
-                   "runes_equipped": self.runes_equipped,
                    "owned_chars": self.owned_chars, "party_indices": party_idx, "shards": getattr(self, "shards", {})})
 
     def do_reset(self):
@@ -75,16 +73,15 @@ class GameApp(BattleMixin):
         elif self.state == "battle":
             if hasattr(self, "_update_particles"): self._update_particles()
             if getattr(self, "b_shake", 0) > 0: self.b_shake -= 2
-            if getattr(self, "b_flash", None): self.b_flash = None # Flash lasts 1 frame
+            if getattr(self, "b_flash", None): self.b_flash = None
             self.draw_battle()
-        elif self.state == "stages":
-            self.draw_stages()
-        elif self.state == "runes":
-            self.draw_runes()
             
-        if getattr(self, "notif_timer", 0) > 0:
+        # Notification Logic (Global)
+        self.canvas.delete("notif")
+        if self.notif_timer > 0:
             self.notif_timer -= 1
-            if self.notif_timer <= 0: self.notif_msg = None
+            # Minimalist Notification (Subtle text at the bottom)
+            self.canvas.create_text(WIDTH//2, HEIGHT-30, text=self.notif_msg, fill=GREEN, font=("Segoe UI", 10, "bold"), tags="notif")
             
         self.root.after(50, self.animate)
 
@@ -152,40 +149,35 @@ class GameApp(BattleMixin):
         # Top Header Bar
         c.create_rectangle(0,0,WIDTH,60,fill="#161b22",outline="#30363d")
         c.create_text(70,30,text="⚔️ Gacha Quest",fill=WHITE,font=("Segoe UI",18,"bold"),anchor="w")
-        self.add_btn(20, 15, 30, 30, "🏆", GOLD, font_size=12, command=self.goto_achievements)
         self.add_btn(WIDTH-40, 15, 30, 30, "⛶", "#444", font_size=14, command=self.toggle_fullscreen)
         c.create_text(WIDTH-60,30,text=f"💰 {self.gold}  🎟️ {self.backpack.get('skip_ticket', 0)}",fill=GOLD,font=("Segoe UI",14),anchor="e")
         
-        # Center Content Panel
-        c.create_rectangle(WIDTH//2-220, 90, WIDTH//2+220, 520, fill="#161b22", outline="#30363d", width=2)
-        c.create_text(WIDTH//2,130,text="COMMAND CENTER",fill=WHITE,font=("Segoe UI",20,"bold"))
-        c.create_text(WIDTH//2,155,text=f"Stage: {self.max_stage_cleared} • Party: {len(self.party)} • Total Heroes: {len(self.owned_chars)}",fill="#888",font=("Segoe UI",10))
+        # Dashboard Panel
+        c.create_rectangle(WIDTH//2-225, 95, WIDTH//2+225, 520, fill="#161b22", outline="#30363d", width=2)
+        c.create_text(WIDTH//2, 130, text="COMMAND CENTER", fill=WHITE, font=("Segoe UI", 20, "bold"))
+        c.create_text(WIDTH//2, 158, text=f"Stage: {self.max_stage_cleared} • Party: {len(self.party)} • Collection: {len(self.owned_chars)}", fill="#888", font=("Segoe UI", 10))
 
         # Grid Buttons (2 Columns)
-        bx1 = WIDTH//2 - 195; bx2 = WIDTH//2 + 5; bw = 190; bh = 60
+        bx1 = WIDTH//2 - 200; bx2 = WIDTH//2 + 5; bw = 195; bh = 65
         # Row 1: Battle Actions
-        self.add_btn(bx1, 185, bw, bh, "⚔️ STAGES", "#1a237e", font_size=13, command=self.goto_stages)
-        self.add_btn(bx2, 185, bw, bh, "🌟 RUNES", "#4a148c", font_size=13, command=self.goto_runes)
+        self.add_btn(bx1, 190, bw, bh, "⚔️ STAGES", "#1a237e", font_size=13, command=self.goto_stages)
+        self.add_btn(bx2, 190, bw, bh, "🎰 GACHA", "#4a148c", font_size=13, command=self.goto_gacha)
         # Row 2: Management
-        self.add_btn(bx1, 255, bw, bh, "🎰 GACHA", "#4e342e", font_size=13, command=self.goto_gacha)
-        self.add_btn(bx2, 255, bw, bh, "👥 PARTY", "#1b5e20", font_size=13, command=self.goto_party)
-        # Row 3: Growth
-        self.add_btn(bx1, 325, bw, bh, "🎒 BACKPACK", "#e65100", font_size=13, command=self.goto_backpack)
-        self.add_btn(bx2, 325, bw, bh, "🆙 ASCEND", "#f57f17", font_size=13, command=self.goto_ascension)
-        
+        self.add_btn(bx1, 270, bw, bh, "👥 PARTY", "#1b5e20", font_size=13, command=self.goto_party)
+        self.add_btn(bx2, 270, bw, bh, "🎒 BACKPACK", "#e65100", font_size=13, command=self.goto_backpack)
+        # Row 3: Growth & Save
+        self.add_btn(bx1, 350, bw, bh, "🆙 ASCEND", "#f57f17", font_size=13, command=self.goto_ascension)
+        self.add_btn(bx2, 350, bw, bh, "💾 SAVE", "#1565c0", font_size=13, command=self._save_notify)
+
         # Footer Actions
-        uy = 425
-        self.add_btn(WIDTH//2-100, uy, 200, 42, "💾 QUICK SAVE", "#2196f3", font_size=11, command=self._save_notify)
-        self.add_btn(WIDTH//2-100, uy+52, 200, 32, "↩ TITLE MENU", "#444", font_size=10, command=self.back_menu)
+        self.add_btn(WIDTH//2-100, 445, 200, 40, "↩ BACK TO TITLE", "#444", font_size=11, command=self.back_menu)
         
-        # discreet Reset
+        # discreet Reset at bottom-right
         self.add_btn(WIDTH-100, HEIGHT-35, 80, 22, "Reset Data", "#331111", font_size=8, command=self.do_reset)
 
     def _save_notify(self):
         self.do_save()
-        self.canvas.create_rectangle(WIDTH//2-100, HEIGHT-120, WIDTH//2+100, HEIGHT-80, fill="#1a1a2e", outline=GREEN, width=2)
-        self.canvas.create_text(WIDTH//2, HEIGHT-100, text="💾 Progress Saved!", fill=GREEN, font=("Segoe UI", 10, "bold"))
-        self.root.after(1500, self.draw_hub)
+        self.notif_msg = "💾 Progress Saved Successfully!"; self.notif_timer = 60 # 3 seconds at 20fps
 
     # ── GACHA ──
     def goto_gacha(self): self.state="gacha"; self.gacha_results=[]; self.gacha_mode="normal"; self.draw_gacha()
@@ -358,28 +350,61 @@ class GameApp(BattleMixin):
         if ch.get("level",1)>=MAX_LEVEL: self.draw_backpack(); return
         it=ITEMS[key]
         
-        from tkinter import simpledialog
         max_q = self.backpack[key]
-        qty = simpledialog.askinteger("Quantity", f"Use how many {it['name']}?\n(Available: {max_q})", 
-                                       parent=self.root, minvalue=1, maxvalue=max_q)
-        if not qty: return
+        
+        # Custom Slider Dialog
+        top = tk.Toplevel(self.root)
+        top.title("Use Potion")
+        
+        # Spawn near mouse
+        mx = self.root.winfo_pointerx()
+        my = self.root.winfo_pointery()
+        top.geometry(f"300x200+{mx-150}+{my-100}")
+        
+        top.configure(bg="#1a1a2e")
+        top.transient(self.root); top.grab_set()
+        
+        tk.Label(top, text=f"Use {it['name']}", fg="white", bg="#1a1a2e", font=("Segoe UI", 12, "bold")).pack(pady=10)
+        
+        val_var = tk.IntVar(value=1)
+        # Slider
+        scale = tk.Scale(top, from_=1, to=max_q, orient="horizontal", variable=val_var, 
+                         bg="#1a1a2e", fg="white", highlightthickness=0, troughcolor="#333", activebackground=ACCENT)
+        scale.pack(fill="x", padx=30, pady=5)
+        
+        lbl_info = tk.Label(top, text=f"Quantity: 1\nExp: {it['value']}", fg=GOLD, bg="#1a1a2e", font=("Segoe UI", 10))
+        lbl_info.pack(pady=5)
+        
+        def update_info(*args):
+            q = val_var.get()
+            lbl_info.config(text=f"Quantity: {q}\nExp: {it['value'] * q}")
+        val_var.trace_add("write", update_info)
+        
+        def confirm():
+            qty = val_var.get()
+            top.destroy()
+            self._process_use_item(ch, key, qty, it)
+            
+        tk.Button(top, text="CONFIRM", command=confirm, bg=GREEN, fg="white", font=("Segoe UI", 10, "bold"), width=15).pack(pady=10)
+
+    def _process_use_item(self, ch, key, qty, it):
+        if not qty or qty <= 0: return
         
         self.backpack[key] -= qty
-        buffs = self.calc_rune_buffs()
-        total_exp = int(it["value"] * qty * (1 + buffs.get("exp", 0)))
+        total_exp = it["value"] * qty
         from game.constants import add_exp
         gained = add_exp(ch, total_exp)
         self.do_save(); self.draw_backpack()
-        msg=f"+{total_exp} EXP"
+        msg=f"✨ +{total_exp} EXP"
         if gained>0: msg+=f" — LEVEL UP! (+{gained})"
-        self.canvas.create_text(WIDTH//2,HEIGHT-80,text=msg,fill=GOLD,font=("Segoe UI",14,"bold"))
+        self.notif_msg = msg; self.notif_timer = 60
 
     def use_buff(self,key):
         if self.bp_selected_char is None or self.backpack.get(key,0)<=0: return
         ch=self.owned_chars[self.bp_selected_char]; cid=id(ch)
         if cid not in self.active_buffs: self.active_buffs[cid]=[]
         self.active_buffs[cid].append(key); self.backpack[key]-=1; self.do_save(); self.draw_backpack()
-        self.canvas.create_text(WIDTH//2,HEIGHT-80,text="Buff applied for next fight!",fill=CYAN,font=("Segoe UI",13,"bold"))
+        self.notif_msg = "🧪 Buff Applied for Next Battle!"; self.notif_timer = 60
 
     def equip_armor(self, key):
         if self.bp_selected_char is None or self.backpack.get(key,0)<=0: return
@@ -392,8 +417,7 @@ class GameApp(BattleMixin):
             from game.constants import update_char_stats, ITEMS
             update_char_stats(ch)
             self.do_save(); self.draw_backpack()
-            val = int(ITEMS[key]["value"] * 100)
-            self.canvas.create_text(WIDTH//2,HEIGHT-80,text=f"{ITEMS[key]['name']} Equipped! +{val}% Stats",fill=GOLD,font=("Segoe UI",14, "bold"))
+            self.notif_msg = f"⚔️ {ITEMS[key]['name']} Equipped!"; self.notif_timer = 60
 
     def unequip_armor(self, idx):
         ch = self.owned_chars[idx]
@@ -409,94 +433,6 @@ class GameApp(BattleMixin):
         update_char_stats(ch); self.do_save(); self.draw_backpack()
         self.canvas.create_text(WIDTH//2,HEIGHT-80,text="Armor Unequipped!",fill=GREEN,font=("Segoe UI",14, "bold"))
 
-    # ── RUNES ──
-    def goto_runes(self): self.state="runes"; self.draw_runes()
-    def draw_runes(self):
-        self.clear(); c=self.canvas
-        # Rune Background
-        c.create_rectangle(0,0,WIDTH,HEIGHT,fill="#0a001a",outline="")
-        c.create_text(20,30,text="🌟 Global Rune System",fill=GOLD,font=("Segoe UI",18,"bold"),anchor="w")
-        
-        # Current Buffs
-        b = self.calc_rune_buffs()
-        btxt = f"Stats: HP+{int(b['hp']*100)}% ATK+{int(b['atk']*100)}% DEF+{int(b['def']*100)}% SPD+{int(b['spd']*100)}%"
-        etxt = f"Utility: Gold+{int(b['gold']*100)}% EXP+{int(b['exp']*100)}%"
-        c.create_text(WIDTH//2, 75, text=btxt, fill=CYAN, font=("Segoe UI", 10, "bold"))
-        c.create_text(WIDTH//2, 95, text=etxt, fill=GOLD, font=("Segoe UI", 10, "bold"))
-        
-        # Slots
-        for i in range(3):
-            rx = 50; ry = 120 + i*110
-            c.create_rectangle(rx, ry, WIDTH-50, ry+90, fill="#16162a", outline=GOLD, width=2)
-            c.create_text(rx+20, ry+25, text=f"Slot {i+1}", fill="#888", font=("Segoe UI", 10), anchor="w")
-            
-            rune_key = self.runes_equipped[i]
-            if rune_key:
-                it = ITEMS[rune_key]
-                c.create_text(rx+20, ry+55, text=f"{it['icon']} {it['name']}", fill=WHITE, font=("Segoe UI", 14, "bold"), anchor="w")
-                c.create_text(rx+220, ry+55, text=it["desc"], fill=it["color"], font=("Segoe UI", 11), anchor="w")
-                self.add_btn(WIDTH-150, ry+30, 80, 35, "UNEQUIP", RED, font_size=9, command=lambda idx=i: self.unequip_rune(idx))
-            else:
-                c.create_text(rx+20, ry+55, text="Empty Slot", fill="#444", font=("Segoe UI", 14, "italic"), anchor="w")
-                self.add_btn(WIDTH-150, ry+30, 80, 35, "EQUIP", GREEN, font_size=9, command=lambda idx=i: self.show_rune_inventory(idx))
-                
-        self.add_btn(WIDTH//2-80, HEIGHT-50, 160, 38, "← Back", GRAY, font_size=11, command=self.goto_hub)
-
-    def calc_rune_buffs(self):
-        b = {"hp":0.0, "atk":0.0, "def":0.0, "spd":0.0, "gold":0.0, "exp":0.0}
-        for rk in self.runes_equipped:
-            if rk:
-                it = ITEMS[rk]
-                if "atk" in rk: b["atk"] += it["value"]
-                elif "hp" in rk: b["hp"] += it["value"]
-                elif "def" in rk: b["def"] += it["value"]
-                elif "spd" in rk: b["spd"] += it["value"]
-                elif "gold" in rk: b["gold"] += it["value"]
-                elif "exp" in rk: b["exp"] += it["value"]
-        return b
-
-    def unequip_rune(self, idx):
-        rk = self.runes_equipped[idx]
-        if rk:
-            self.backpack[rk] = self.backpack.get(rk, 0) + 1
-            self.runes_equipped[idx] = None
-            self.refresh_all_stats(); self.do_save(); self.draw_runes()
-
-    def show_rune_inventory(self, slot_idx):
-        self.state = "rune_inv"; self.active_rune_slot = slot_idx
-        self.draw_rune_inventory()
-
-    def draw_rune_inventory(self):
-        self.clear(); c=self.canvas
-        c.create_rectangle(0,0,WIDTH,60,fill=BG_PANEL,outline="")
-        c.create_text(20,30,text=f"Select Rune for Slot {self.active_rune_slot+1}",fill=WHITE,font=("Segoe UI",16,"bold"),anchor="w")
-        
-        runes = [k for k,v in self.backpack.items() if v>0 and ITEMS[k]["type"]=="rune"]
-        if not runes:
-            c.create_text(WIDTH//2, HEIGHT//2, text="No Runes in Backpack", fill="#888", font=("Segoe UI", 14))
-        else:
-            iy = 80
-            for rk in runes:
-                it = ITEMS[rk]
-                c.create_rectangle(50, iy, WIDTH-50, iy+50, fill=BG_CARD, outline=it["color"])
-                c.create_text(70, iy+25, text=f"{it['icon']} {it['name']} (x{self.backpack[rk]})", fill=WHITE, font=("Segoe UI", 11), anchor="w")
-                c.create_text(WIDTH-250, iy+25, text=it["desc"], fill=it["color"], font=("Segoe UI", 9), anchor="e")
-                self.add_btn(WIDTH-150, iy+10, 80, 30, "SELECT", GREEN, font_size=9, command=lambda k=rk: self.equip_rune(k))
-                iy += 55
-                
-        self.add_btn(WIDTH//2-80, HEIGHT-50, 160, 38, "← Cancel", GRAY, font_size=11, command=self.goto_runes)
-
-    def equip_rune(self, rk):
-        self.backpack[rk] -= 1
-        self.runes_equipped[self.active_rune_slot] = rk
-        self.refresh_all_stats(); self.do_save(); self.goto_runes()
-
-    def refresh_all_stats(self):
-        buffs = self.calc_rune_buffs()
-        from game.constants import update_char_stats
-        for ch in self.owned_chars:
-            update_char_stats(ch, global_buffs=buffs)
-
     # ── STAGES ──
     def goto_stages(self): self.state="stages"; self.stage_page=self.max_stage_cleared // 4; self.draw_stages()
     def draw_stages(self):
@@ -506,9 +442,6 @@ class GameApp(BattleMixin):
         self.add_btn(WIDTH-40, 15, 30, 30, "⛶", "#444", font_size=14, command=self.toggle_fullscreen)
         c.create_text(WIDTH-60,30,text=f"Page {self.stage_page+1}  🎟️ {self.backpack.get('skip_ticket', 0)}",fill="#aaa",font=("Segoe UI",12),anchor="e")
         
-        if getattr(self, "notif_msg", None):
-            c.create_rectangle(WIDTH//2-250, HEIGHT-110, WIDTH//2+250, HEIGHT-60, fill="#1a1a2e", outline=GOLD, width=2)
-            c.create_text(WIDTH//2, HEIGHT-85, text=self.notif_msg, fill=GOLD, font=("Segoe UI", 11, "bold"), width=480)
         if not self.party:
             c.create_text(WIDTH//2,HEIGHT//2,text="Add characters to party first!",fill=RED,font=("Segoe UI",16))
             self.add_btn(WIDTH//2-80,HEIGHT//2+40,160,38,"← Back",GRAY,font_size=11,command=self.goto_hub); return
@@ -554,7 +487,7 @@ class GameApp(BattleMixin):
         for k in loot:
             if ITEMS[k]["type"]=="gold": self.gold += ITEMS[k]["value"]
             else: self.backpack[k] = self.backpack.get(k, 0) + 1
-        self.do_save(); self.draw_backpack()
+        self.do_save(); self.draw_stages()
         
         loot_str = ", ".join([f"{count}x {ITEMS[k]['icon']}" for k, count in loot_counts.items()])
         self.notif_msg = f"Skipped Stage {idx+1}! +{reward}g" + (f" and Loot: {loot_str}" if loot_str else "")

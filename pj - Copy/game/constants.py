@@ -55,18 +55,6 @@ ITEMS = ItemDict({
     "armor_2":      {"name": "Steel Shell",    "icon": "🛡️", "color": "#607d8b", "type": "armor",  "value": 0.25, "desc": "+25% HP/DEF"},
     "acc_1":        {"name": "Speed Boots",    "icon": "👟", "color": "#81c784", "type": "accessory","value": 0.10, "desc": "+10% SPD"},
     "acc_2":        {"name": "Wind Ring",      "icon": "💍", "color": "#4fc3f7", "type": "accessory","value": 0.20, "desc": "+20% SPD"},
-    # Runes T1
-    "rune_atk_1":   {"name": "Power Rune I",   "icon": "🔴", "color": "#f44336", "type": "rune", "value": 0.05, "desc": "Global +5% ATK"},
-    "rune_hp_1":    {"name": "Life Rune I",    "icon": "🟢", "color": "#4caf50", "type": "rune", "value": 0.05, "desc": "Global +5% HP"},
-    "rune_def_1":   {"name": "Iron Rune I",    "icon": "🔵", "color": "#2196f3", "type": "rune", "value": 0.05, "desc": "Global +5% DEF"},
-    "rune_spd_1":   {"name": "Haste Rune I",   "icon": "🟡", "color": "#ffeb3b", "type": "rune", "value": 0.03, "desc": "Global +3% SPD"},
-    # Runes T2
-    "rune_atk_2":   {"name": "Power Rune II",  "icon": "🔴", "color": "#e53935", "type": "rune", "value": 0.12, "desc": "Global +12% ATK"},
-    "rune_hp_2":    {"name": "Life Rune II",   "icon": "🟢", "color": "#43a047", "type": "rune", "value": 0.12, "desc": "Global +12% HP"},
-    "rune_gold_1":  {"name": "Wealth Rune I",  "icon": "💰", "color": "#fb8c00", "type": "rune", "value": 0.15, "desc": "Global +15% Gold"},
-    # Runes T3 (Ancient)
-    "rune_atk_3":   {"name": "Ancient Power",  "icon": "🔥", "color": "#b71c1c", "type": "rune", "value": 0.25, "desc": "Global +25% ATK"},
-    "rune_exp_1":   {"name": "Wisdom Rune I",  "icon": "📖", "color": "#1e88e5", "type": "rune", "value": 0.20, "desc": "Global +20% EXP"},
 })
 
 def get_stage_loot_table(stage_idx):
@@ -81,11 +69,9 @@ def get_stage_loot_table(stage_idx):
     if stage_idx >= 6:
         table += [("gold_bag", 0.30)]
     if stage_idx > 10:
-        table += [("weapon_1", 0.15), ("armor_1", 0.15), ("acc_1", 0.10), ("rune_atk_1", 0.04), ("rune_hp_1", 0.04)]
+        table += [("weapon_1", 0.15), ("armor_1", 0.15), ("acc_1", 0.10)]
     if stage_idx > 40:
-        table += [("weapon_2", 0.08), ("armor_2", 0.08), ("acc_2", 0.05), ("rune_atk_2", 0.03), ("rune_gold_1", 0.03)]
-    if stage_idx > 80:
-        table += [("rune_atk_3", 0.01), ("rune_exp_1", 0.02)]
+        table += [("weapon_2", 0.08), ("armor_2", 0.08), ("acc_2", 0.05)]
     return table
 
 def roll_loot(stage_idx, include_ticket=True):
@@ -107,18 +93,12 @@ def roll_loot(stage_idx, include_ticket=True):
 def exp_for_level(level):
     return int(80 * (level ** 1.5))
 
-def get_level_stats(base_char, level, armors=None, legacy_armor_count=0, ascension=0, **kwargs):
+def get_level_stats(base_char, level, armors=None, legacy_armor_count=0, ascension=0):
     s = 1.02 ** (level - 1)
     asc_mult = 1.2 ** ascension
     hp_m, atk_m, def_m, spd_m = 1.0, 1.0, 1.0, 1.0
     hp_m += (legacy_armor_count * 0.15); atk_m += (legacy_armor_count * 0.15)
     
-    # Global Runes (Passed via global_buffs dict)
-    if kwargs.get("global_buffs"):
-        gb = kwargs["global_buffs"]
-        hp_m += gb.get("hp", 0); atk_m += gb.get("atk", 0)
-        def_m += gb.get("def", 0); spd_m += gb.get("spd", 0)
-
     if armors:
         for a_key in armors:
             it = ITEMS[a_key]
@@ -128,15 +108,15 @@ def get_level_stats(base_char, level, armors=None, legacy_armor_count=0, ascensi
             else: hp_m += it["value"]; atk_m += it["value"]
 
     return {
-        "hp": int(base_char["base_hp" if "base_hp" in base_char else "hp"]*s*hp_m*asc_mult), 
-        "atk": int(base_char["base_atk" if "base_atk" in base_char else "atk"]*s*atk_m*asc_mult), 
-        "def": int(base_char["base_def" if "base_def" in base_char else "def"]*s*def_m*asc_mult), 
-        "spd": int(base_char["base_spd" if "base_spd" in base_char else "spd"]*(1+(level-1)*0.02)*spd_m)
+        "hp": int(base_char["hp"] * s * hp_m * asc_mult),
+        "atk": int(base_char["atk"] * s * atk_m * asc_mult),
+        "def": int(base_char["def"] * s * def_m * asc_mult),
+        "spd": int(base_char.get("spd", 10) * spd_m * s)
     }
 
-def update_char_stats(char, global_buffs=None):
-    st = get_level_stats(char, char.get("level", 1), char.get("armors_equipped", []), char.get("armor_count", 0), char.get("ascension", 0), global_buffs=global_buffs)
-    char["hp"] = st["hp"]; char["atk"] = st["atk"]; char["def"] = st["def"]; char["spd"] = st["spd"]
+def update_char_stats(ch):
+    stats = get_level_stats(ch, ch['level'], ch.get('armors_equipped'), ascension=ch.get('ascension', 0))
+    ch.update(stats)
 
 def make_new_char(template):
     ch = dict(template); ch["level"] = 1; ch["exp"] = 0; ch["armor_count"] = 0; ch["armors_equipped"] = []; ch["ascension"] = 0

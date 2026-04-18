@@ -12,19 +12,18 @@ class BattleMixin:
             e["spd"] = int(10 * (1.01 ** stage_idx))
             e["is_player"] = False; e["b_idx"] = i
             
-        party = copy.deepcopy(self.party); self.b_party = []
-        for i, ch in enumerate(party):
-            d = dict(ch, max_hp=ch["hp"], cur_hp=ch["hp"])
-            for b in self.active_buffs.get(id(self._find_orig(ch)), []):
-                it = ITEMS[b]
-                if it["stat"]=="hp": bonus=int(d["max_hp"]*it["value"]); d["max_hp"]+=bonus; d["cur_hp"]+=bonus; d["hp"]+=bonus
-                elif it["stat"]=="atk": d["atk"]=int(d["atk"]*(1+it["value"]))
-                elif it["stat"]=="def": d["def"]=int(d["def"]*(1+it["value"]))
-            d["is_player"] = True; d["b_idx"] = i
+        self.b_party = []
+        for i, ch in enumerate(self.party):
+            # Create a clean copy for battle
+            d = copy.deepcopy(ch)
+            d["max_hp"] = d.get("hp", 100)
+            d["cur_hp"] = d["max_hp"]
+            d["is_player"] = True
+            d["b_idx"] = i
             d["spd"] = d.get("spd", 10)
             self.b_party.append(d)
             
-        self.active_buffs = {}; self.b_log=["Battle Start!"]; self.b_enemy_idx=0
+        self.b_log=[f"Battle Start! {len(self.b_party)} heroes ready."]; self.b_enemy_idx=0
         self.round_damage = 0
         self.b_particles = []
         self.b_state = "normal"
@@ -47,13 +46,10 @@ class BattleMixin:
             if self.state != "battle": return
             self.state = "victory_processing"
 
-            # Global Rune Buffs
-            buffs = self.calc_rune_buffs() if hasattr(self, "calc_rune_buffs") else {"gold":0,"exp":0}
-            
-            reward=int((self.stage_idx+1)*150 * (1 + buffs.get("gold", 0))); self.gold+=reward
+            reward=(self.stage_idx+1)*150; self.gold+=reward
             loot=roll_loot(self.stage_idx)
             for k in loot:
-                if ITEMS[k]["type"]=="gold": self.gold += int(ITEMS[k]["value"] * (1 + buffs.get("gold", 0)))
+                if ITEMS[k]["type"]=="gold": self.gold+=ITEMS[k]["value"]
                 else: self.backpack[k]=self.backpack.get(k,0)+1
             if self.stage_idx >= self.max_stage_cleared: self.max_stage_cleared = self.stage_idx + 1
             self.victory_reward=reward; self.victory_loot=loot
@@ -89,7 +85,7 @@ class BattleMixin:
         self.clear(); c=self.canvas
         
         # Biome Background
-        stg_name = getattr(self.current_stage, "name", "")
+        stg_name = self.current_stage.get("name", "")
         bg_col = "#000b1a" # Default deep space
         if "Volcano" in stg_name or "Inferno" in stg_name: bg_col = "#1a0500"
         elif "Forest" in stg_name or "Swamp" in stg_name: bg_col = "#051000"
@@ -110,7 +106,7 @@ class BattleMixin:
             c.create_rectangle(0,0,WIDTH,HEIGHT,fill=self.b_flash,stipple="gray50")
 
         c.create_rectangle(0,0,WIDTH,50,fill=BG_PANEL,outline="")
-        c.create_text(WIDTH//2 + off_x,25 + off_y,text=f"⚔️ {self.current_stage['name']}",fill=WHITE,font=("Segoe UI",16,"bold"))
+        c.create_text(WIDTH//2 + off_x,25 + off_y,text=f"⚔️ {self.current_stage.get('name', 'Battle')}",fill=WHITE,font=("Segoe UI",16,"bold"))
         # Turn order UI and Damage
         if hasattr(self, "turn_queue"):
             c.create_text(WIDTH//2 + off_x, 60 + off_y, text=f"📊 Round Damage: {getattr(self, 'round_damage', 0)}", fill=GOLD, font=("Segoe UI", 11, "bold"))
@@ -161,20 +157,22 @@ class BattleMixin:
             c.create_text(x+10,y+100,text=f"ATK:{ch['atk']} DEF:{ch['def']}",fill="#888",font=("Segoe UI",7),anchor="w")
             if alive and getattr(self, "b_state", "normal") == "selecting_heal_target":
                 self.add_btn(x+5, y+108, pw-10, 18, "💚 HEAL", GREEN, font_size=8, command=lambda idx=i: self.execute_heal(idx))
-        if self.b_turn=="player":
-            act=self.b_party[self.b_selected_char] if self.b_selected_char<len(self.b_party) else None
-            if act and act["cur_hp"]>0:
-                atk_btn = self.add_btn(120,470,150,45,"⚔️ Attack",ACCENT,font_size=13,command=self.do_attack)
-                skill_btn = self.add_btn(300,470,180,45,f"✨ {act.get('skill','Skill')}",PURPLE,font_size=11,command=self.do_skill)
-                if getattr(skill_btn, "is_hover", False):
-                    sd = act.get("skill_dmg", 1.5)
-                    info = f"Heals ally for {int(act['atk']*2)} HP" if sd == 0 else f"Deals {int(act['atk']*sd)} base dmg"
-                    c.create_rectangle(300, 425, 480, 455, fill="#2a2a4e", outline=PURPLE, width=1)
-                    c.create_text(390, 440, text=info, fill=WHITE, font=("Segoe UI", 9))
-                if getattr(atk_btn, "is_hover", False):
-                    info = f"Deals ~{act['atk']-3} to {act['atk']+5} base dmg"
-                    c.create_rectangle(120, 425, 270, 455, fill="#2a2a4e", outline=ACCENT, width=1)
-                    c.create_text(195, 440, text=info, fill=WHITE, font=("Segoe UI", 9))
+        if getattr(self, "b_turn", None) == "player":
+            char_idx = getattr(self, "b_selected_char", 0)
+            if char_idx < len(self.b_party):
+                act = self.b_party[char_idx]
+                if act and act.get("cur_hp", 0) > 0:
+                    atk_btn = self.add_btn(120,470,150,45,"⚔️ Attack",ACCENT,font_size=13,command=self.do_attack)
+                    skill_btn = self.add_btn(300,470,180,45,f"✨ {act.get('skill','Skill')}",PURPLE,font_size=11,command=self.do_skill)
+                    if getattr(skill_btn, "is_hover", False):
+                        sd = act.get("skill_dmg", 1.5)
+                        info = f"Heals ally for {int(act['atk']*2)} HP" if sd == 0 else f"Deals {int(act['atk']*sd)} base dmg"
+                        c.create_rectangle(300, 425, 480, 455, fill="#2a2a4e", outline=PURPLE, width=1)
+                        c.create_text(390, 440, text=info, fill=WHITE, font=("Segoe UI", 9))
+                    if getattr(atk_btn, "is_hover", False):
+                        info = f"Deals ~{act['atk']-3} to {act['atk']+5} base dmg"
+                        c.create_rectangle(120, 425, 270, 455, fill="#2a2a4e", outline=ACCENT, width=1)
+                        c.create_text(195, 440, text=info, fill=WHITE, font=("Segoe UI", 9))
             self.add_btn(510,470,130,45,"🏃 Flee",GRAY,font_size=13,command=self.goto_hub)
         c.create_rectangle(0,540,WIDTH,HEIGHT,fill="#111122",outline="")
         c.create_text(WIDTH//2,570,text=" | ".join(self.b_log[-3:]),fill="#ccc",font=("Segoe UI",10),width=WIDTH-20)

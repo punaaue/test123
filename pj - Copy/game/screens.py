@@ -41,6 +41,7 @@ class GameApp(BattleMixin):
         self.gacha_results = []; self.gacha_mode = "normal"
         self.notif_msg = ""; self.notif_timer = 0
         self._try_load()
+        if not self.owned_chars: self._add_starting_chars()
         self.canvas.bind("<Button-1>", self.on_click); self.canvas.bind("<Motion>", self.on_motion)
         self.root.bind("<F11>", lambda e: self.toggle_fullscreen())
         self.root.bind("<Escape>", lambda e: self.toggle_fullscreen() if getattr(self, "is_fullscreen", False) else None)
@@ -57,6 +58,16 @@ class GameApp(BattleMixin):
             party_indices = data.get("party_indices", [])
             self.party = [self.owned_chars[i] for i in party_indices if i < len(self.owned_chars)]
 
+    def _add_starting_chars(self):
+        from game.constants import ALL_CHARACTERS, make_new_char
+        starters = ["Slime", "Apprentice", "Blaze Knight"]
+        for name in starters:
+            tpl = next((c for c in ALL_CHARACTERS if c["name"] == name), ALL_CHARACTERS[0])
+            new_ch = make_new_char(tpl)
+            self.owned_chars.append(new_ch)
+            if len(self.party) < 3: self.party.append(new_ch)
+        self.do_save()
+
     def do_save(self):
         party_idx = [self.owned_chars.index(c) for c in self.party if c in self.owned_chars]
         save_game({"gold": self.gold, "backpack": self.backpack, "max_stage_cleared": self.max_stage_cleared,
@@ -65,6 +76,7 @@ class GameApp(BattleMixin):
     def do_reset(self):
         delete_save(); self.owned_chars=[]; self.party=[]; self.gold=500
         self.backpack={"exp_potion_1":3}; self.max_stage_cleared=0; self.active_buffs={}; self.shards={}
+        self._add_starting_chars()
         self.goto_hub()
 
     def animate(self):
@@ -165,12 +177,14 @@ class GameApp(BattleMixin):
         # Row 2: Management
         self.add_btn(bx1, 270, bw, bh, "👥 PARTY", "#1b5e20", font_size=13, command=self.goto_party)
         self.add_btn(bx2, 270, bw, bh, "🎒 BACKPACK", "#e65100", font_size=13, command=self.goto_backpack)
-        # Row 3: Growth & Save
+        # Row 3: Growth & Info
         self.add_btn(bx1, 350, bw, bh, "🆙 ASCEND", "#f57f17", font_size=13, command=self.goto_ascension)
-        self.add_btn(bx2, 350, bw, bh, "💾 SAVE", "#1565c0", font_size=13, command=self._save_notify)
+        self.add_btn(bx2, 350, bw, bh, "📖 INDEX", "#006064", font_size=13, command=self.goto_index)
+        # Row 4: Save
+        self.add_btn(WIDTH//2-100, 430, 200, 40, "💾 SAVE GAME", "#1565c0", font_size=11, command=self._save_notify)
 
         # Footer Actions
-        self.add_btn(WIDTH//2-100, 445, 200, 40, "↩ BACK TO TITLE", "#444", font_size=11, command=self.back_menu)
+        self.add_btn(WIDTH//2-100, 480, 200, 30, "↩ BACK TO TITLE", "#444", font_size=9, command=self.back_menu)
         
         # discreet Reset at bottom-right
         self.add_btn(WIDTH-100, HEIGHT-35, 80, 22, "Reset Data", "#331111", font_size=8, command=self.do_reset)
@@ -178,6 +192,47 @@ class GameApp(BattleMixin):
     def _save_notify(self):
         self.do_save()
         self.notif_msg = "💾 Progress Saved Successfully!"; self.notif_timer = 60 # 3 seconds at 20fps
+
+    # ── INDEX (COLLECTION) ──
+    def goto_index(self): self.state="index"; self.index_page=0; self.draw_index()
+    def draw_index(self):
+        self.clear(); c=self.canvas
+        c.create_rectangle(0,0,WIDTH,HEIGHT,fill="#050510",outline="")
+        c.create_rectangle(0,0,WIDTH,60,fill="#161b22",outline="#30363d")
+        c.create_text(20,30,text="📖 Character Index",fill=WHITE,font=("Segoe UI",16,"bold"),anchor="w")
+        
+        owned_names = {ch["name"] for ch in self.owned_chars}
+        from game.constants import ALL_CHARACTERS
+        
+        # Pagination
+        per_page = 20; start = self.index_page * per_page
+        subset = ALL_CHARACTERS[start : start + per_page]
+        
+        c.create_text(WIDTH-20,30,text=f"Collected: {len(owned_names)}/{len(ALL_CHARACTERS)}",fill=GOLD,font=("Segoe UI",12),anchor="e")
+        
+        cw, ch_h = 130, 160
+        for i, itm in enumerate(subset):
+            row, col = i//5, i%5
+            x = 80 + col * (cw + 30); y = 80 + row * (ch_h + 30)
+            is_owned = itm["name"] in owned_names
+            
+            if is_owned:
+                draw_card(c, x, y, cw, ch_h, itm)
+            else:
+                # Silhouette for unowned
+                c.create_rectangle(x, y, x+cw, y+ch_h, fill="#111", outline="#333", width=2)
+                c.create_text(x+cw//2, y+ch_h//2, text="?", fill="#444", font=("Segoe UI", 30, "bold"))
+                c.create_text(x+cw//2, y+ch_h-20, text=f"{itm['stars']}★", fill="#333", font=("Segoe UI", 10))
+
+        # Paging Buttons
+        if self.index_page > 0:
+            self.add_btn(40, HEIGHT-50, 120, 35, "← Previous", "#333", command=lambda: self._page_index(-1))
+        if start + per_page < len(ALL_CHARACTERS):
+            self.add_btn(WIDTH-160, HEIGHT-50, 120, 35, "Next →", "#333", command=lambda: self._page_index(1))
+            
+        self.add_btn(WIDTH//2-60, HEIGHT-50, 120, 35, "Back", GRAY, command=self.goto_hub)
+
+    def _page_index(self, d): self.index_page += d; self.draw_index()
 
     # ── GACHA ──
     def goto_gacha(self): self.state="gacha"; self.gacha_results=[]; self.gacha_mode="normal"; self.draw_gacha()
@@ -198,12 +253,15 @@ class GameApp(BattleMixin):
         # Mode tabs
         nc="#5c2d91" if self.gacha_mode=="normal" else "#333"
         hc="#b71c1c" if self.gacha_mode=="high" else "#333"
-        self.add_btn(100,70,200,35,"Normal (1-6★)",nc,font_size=11,command=lambda:self._set_gacha("normal"))
-        self.add_btn(320,70,200,35,f"High Tier (4-10★)",hc,font_size=11,command=lambda:self._set_gacha("high"))
+        sc="#ffd740" if self.gacha_mode=="super" else "#333"
+        self.add_btn(50,70,250,35,"Normal (1-6★)",nc,font_size=10,command=lambda:self._set_gacha("normal"))
+        self.add_btn(320,70,250,35,f"High Tier (4-10★)",hc,font_size=10,command=lambda:self._set_gacha("high"))
+        self.add_btn(590,70,250,35,f"SUPER TIER (7-12★)",sc,font_size=10,command=lambda:self._set_gacha("super"))
         # Show rates
-        is_hi = self.gacha_mode=="high"
-        rates = HIGH_RATES if is_hi else NORMAL_RATES
-        cost = HIGH_COST if is_hi else NORMAL_COST
+        mode = self.gacha_mode
+        if mode == "super": rates, cost = SUPER_RATES, SUPER_COST
+        elif mode == "high": rates, cost = HIGH_RATES, HIGH_COST
+        else: rates, cost = NORMAL_RATES, NORMAL_COST
         rate_str = "  ".join(f"{s}★:{r}%" for s,r in rates.items())
         c.create_text(WIDTH//2,125,text=f"Cost: {cost}g | Rates: {rate_str}",fill="#aaa",font=("Segoe UI",8))
         # Results
@@ -227,12 +285,14 @@ class GameApp(BattleMixin):
     def _set_gacha(self, mode): self.gacha_mode=mode; self.gacha_results=[]; self.draw_gacha()
 
     def _do_gacha(self, count):
-        is_hi = self.gacha_mode=="high"; cost=(HIGH_COST if is_hi else NORMAL_COST)*count
+        mode = self.gacha_mode
+        if mode == "super": cost, roll_fn = SUPER_COST * count, roll_super
+        elif mode == "high": cost, roll_fn = HIGH_COST * count, roll_high
+        else: cost, roll_fn = NORMAL_COST * count, roll_normal
         if self.gold < cost:
             self.gacha_results=[]; self.draw_gacha()
             self.canvas.create_text(WIDTH//2,400,text="Not enough gold!",fill=RED,font=("Segoe UI",14,"bold")); return
         self.gold -= cost; self.gacha_results=[]
-        roll_fn = roll_high if is_hi else roll_normal
         for _ in range(count):
             ch = roll_fn()
             if any(existing["name"] == ch["name"] for existing in self.owned_chars):
@@ -253,7 +313,8 @@ class GameApp(BattleMixin):
         if not self.owned_chars:
             c.create_text(WIDTH//2,HEIGHT//2,text="No characters yet!",fill="#888",font=("Segoe UI",16))
         else:
-            sorted_owned = sorted(self.owned_chars, key=lambda c: (-c.get("stars", 1), self.owned_chars.index(c)))
+            # Sort: Party members first (by stars), then non-party members (by stars)
+            sorted_owned = sorted(self.owned_chars, key=lambda c: (c not in self.party, -c.get("stars", 1), self.owned_chars.index(c)))
             cw=120; ch_h=140; cols=min(6,len(sorted_owned)); sx=(WIDTH-cols*(cw+10))//2
             tooltip_to_draw = None
             for i,ch in enumerate(sorted_owned):
@@ -330,7 +391,12 @@ class GameApp(BattleMixin):
             if i>=8: break
             actual_idx = self.owned_chars.index(ch)
             sel=(self.bp_selected_char==actual_idx)
-            c.create_rectangle(490,cy,870,cy+48,fill=BG_CARD if not sel else "#2a2a4e",outline=GOLD if sel else "#333",width=2 if sel else 1)
+            is_p = ch in self.party
+            # Highlight for party members
+            bg_col = "#1a2a4e" if sel else ("#161b3e" if is_p else BG_CARD)
+            out_col = GOLD if sel else (GREEN if is_p else "#333")
+            c.create_rectangle(490,cy,870,cy+48,fill=bg_col,outline=out_col,width=2 if (sel or is_p) else 1)
+            if is_p: c.create_text(855, cy+12, text="[DEPLOYED]", fill=GREEN, font=("Segoe UI", 7, "bold"), anchor="e")
             ac = len(ch.get("armors_equipped", [])) + ch.get("armor_count", 0)
             c.create_text(510,cy+14,text=f"{ch['icon']} {ch['name']} {ch.get('rarity','★')} (Armor: {ac}/4)",fill=WHITE,font=("Segoe UI",9,"bold"),anchor="w")
             lvl=ch.get("level",1); exp=ch.get("exp",0); needed=exp_for_level(lvl+1) if lvl<MAX_LEVEL else 0
@@ -458,7 +524,9 @@ class GameApp(BattleMixin):
             else:
                 tag = "✅ " if i < self.max_stage_cleared else ""
                 c.create_text(110,y+25,text=f"{tag}Stage {i+1}: {stg['name']}",fill=WHITE,font=("Segoe UI",14,"bold"),anchor="w")
-                c.create_text(110,y+50,text=f"Enemies: {len(stg['enemies'])} | Reward: {(i+1)*150}g + Loot",fill="#aaa",font=("Segoe UI",10),anchor="w")
+                from game.constants import get_stage_gold_reward
+                reward = get_stage_gold_reward(i)
+                c.create_text(110,y+50,text=f"Enemies: {len(stg['enemies'])} | Reward: {reward:,}g + Loot",fill="#aaa",font=("Segoe UI",10),anchor="w")
                 if i>=len(FIXED_STAGES):
                     c.create_text(110,y+72,text="∞ Infinite Stage",fill=CYAN,font=("Segoe UI",9),anchor="w")
                 
@@ -480,12 +548,15 @@ class GameApp(BattleMixin):
             self.canvas.create_text(WIDTH//2, HEIGHT-80, text="No Skip Tickets left!", fill=RED, font=("Segoe UI", 14, "bold"))
             return
         self.backpack["skip_ticket"] -= 1
-        reward = (idx+1)*150; self.gold += reward
+        from game.constants import get_stage_gold_reward
+        reward = get_stage_gold_reward(idx); self.gold += reward
         loot = roll_loot(idx, include_ticket=False)
         from collections import Counter
         loot_counts = Counter(loot)
         for k in loot:
-            if ITEMS[k]["type"]=="gold": self.gold += ITEMS[k]["value"]
+            if ITEMS[k]["type"]=="gold":
+                bag_mult = 1 + (idx // 5) * 0.2
+                self.gold += int(ITEMS[k]["value"] * bag_mult)
             else: self.backpack[k] = self.backpack.get(k, 0) + 1
         self.do_save(); self.draw_stages()
         
@@ -528,9 +599,13 @@ class GameApp(BattleMixin):
                 idx = start + i
                 if idx >= len(sorted_chars): break
                 ch = sorted_chars[idx]
+                is_p = ch in self.party
                 col = i%2; row = i//2
                 x = 20 + col*430; y = 80 + row*100
-                c.create_rectangle(x, y, x+410, y+90, fill=BG_CARD, outline="#333")
+                # Highlight party
+                c.create_rectangle(x, y, x+410, y+90, fill="#161b3e" if is_p else BG_CARD, outline=GREEN if is_p else "#333", width=2 if is_p else 1)
+                if is_p: c.create_text(x+405, y+10, text="DEPLOYED", fill=GREEN, font=("Segoe UI", 7, "bold"), anchor="ne")
+                
                 c.create_oval(x+10, y+15, x+70, y+75, fill=ch.get("color", ACCENT), outline="")
                 c.create_text(x+40, y+45, text=ch.get("icon", "?"), font=("Segoe UI Emoji", 24))
                 

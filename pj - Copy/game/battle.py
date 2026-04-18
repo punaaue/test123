@@ -46,10 +46,14 @@ class BattleMixin:
             if self.state != "battle": return
             self.state = "victory_processing"
 
-            reward=(self.stage_idx+1)*150; self.gold+=reward
+            from game.constants import get_stage_gold_reward
+            reward = get_stage_gold_reward(self.stage_idx); self.gold += reward
             loot=roll_loot(self.stage_idx)
             for k in loot:
-                if ITEMS[k]["type"]=="gold": self.gold+=ITEMS[k]["value"]
+                if ITEMS[k]["type"]=="gold":
+                    # Gold Bag scales with stage: +20% every 5 stages
+                    bag_mult = 1 + (self.stage_idx // 5) * 0.2
+                    self.gold += int(ITEMS[k]["value"] * bag_mult)
                 else: self.backpack[k]=self.backpack.get(k,0)+1
             if self.stage_idx >= self.max_stage_cleared: self.max_stage_cleared = self.stage_idx + 1
             self.victory_reward=reward; self.victory_loot=loot

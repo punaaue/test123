@@ -107,14 +107,27 @@ def get_level_stats(base_char, level, armors=None, legacy_armor_count=0, ascensi
             elif it["type"] == "accessory": spd_m += it["value"]; atk_m += it["value"]*0.3
             else: hp_m += it["value"]; atk_m += it["value"]
 
+    # Use base stats to prevent compounding growth
+    b_hp = base_char.get("base_hp", base_char["hp"])
+    b_atk = base_char.get("base_atk", base_char["atk"])
+    b_def = base_char.get("base_def", base_char["def"])
+    b_spd = base_char.get("base_spd", base_char.get("spd", 10))
+
     return {
-        "hp": int(base_char["hp"] * s * hp_m * asc_mult),
-        "atk": int(base_char["atk"] * s * atk_m * asc_mult),
-        "def": int(base_char["def"] * s * def_m * asc_mult),
-        "spd": int(base_char.get("spd", 10) * spd_m * s)
+        "hp": int(b_hp * s * hp_m * asc_mult),
+        "atk": int(b_atk * s * atk_m * asc_mult),
+        "def": int(b_def * s * def_m * asc_mult),
+        "spd": int(b_spd * spd_m * s)
     }
 
 def update_char_stats(ch):
+    # Preserve base stats on first update to prevent infinite growth
+    if "base_hp" not in ch:
+        ch["base_hp"] = ch["hp"]
+        ch["base_atk"] = ch["atk"]
+        ch["base_def"] = ch["def"]
+        ch["base_spd"] = ch.get("spd", 10)
+    
     stats = get_level_stats(ch, ch['level'], ch.get('armors_equipped'), ascension=ch.get('ascension', 0))
     ch.update(stats)
 
